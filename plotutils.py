@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 plt.rcParams["figure.figsize"] = (6,6)
 plt.rcParams.update({'font.size': 14})
 
-def plot_event(pfcands, name):
+def plot_event(pfcands, path, name):
 
     pt = pfcands[:,0]
     eta = pfcands[:,1]
@@ -14,4 +14,4 @@ def plot_event(pfcands, name):
     ax.set_ylabel('phi')
     ax.set_xlim([-4,4])
     ax.set_ylim([-4,4])
-    fig.savefig(f'figures/{name}.png')
+    fig.savefig(f'{path}/{name}.png')
