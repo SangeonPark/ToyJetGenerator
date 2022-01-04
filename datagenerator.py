@@ -59,6 +59,7 @@ class jet_data_generator(object):
         #Soft splitting performed in the rest frame of the mother, rotated, and then lorentz boosted back
         #Soft Splitting prior: Gaussian around 0  
         #print("mother = ",mother)
+        np.random.seed()
         randomdraw_theta = np.abs(np.random.normal(0,0.1))
         randomdraw_phi = np.random.uniform(0,2*np.pi)
         #print("randomdraw_theta = ",randomdraw_theta)
@@ -93,6 +94,7 @@ class jet_data_generator(object):
     def hardsplit(self, mother, nthsplit):
         #Hard splitting performed in the rest frame of the mother, rotated, and then lorentz boosted back
         #Hard splitting prior: Gaussian around pi/2,
+        np.random.seed()
         randomdraw_theta = np.abs(np.random.normal(np.pi/2,0.1))
         randomdraw_phi = np.random.uniform(0,2*np.pi)
         if nthsplit==1:
@@ -129,6 +131,7 @@ class jet_data_generator(object):
 
     def draw_first_particle(self):
         #Draw mass from pdf
+        np.random.seed()
         if self.massprior == "signal":
             m = np.random.normal(172.76, 1.32)
 

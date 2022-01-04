@@ -3,7 +3,7 @@ import os
 sys.path.insert(0,'..')
 sys.path.insert(0,'../optimal_transport')
 from typing import Callable, Optional
-from backbone import PositionalEncoding, particleTransformer
+from backbone import PositionalEncoding, particleTransformer, MLP, RNN, CNN
 from emdloss import *
 import torch.nn.functional as F
 import pytorch_lightning as pl
@@ -16,6 +16,11 @@ from torch.utils.data import DataLoader, random_split
 from torchmetrics.functional import accuracy
 from pytorch_lightning.callbacks import Callback
 from tqdm import tqdm
+#from tqdm.notebook import trange, tqdm
+import pickle
+from geomloss import SamplesLoss
+import ot
+
 
 #PATH_DATASETS = os.environ.get("PATH_DATASETS", ".")
 AVAIL_GPUS = min(1, torch.cuda.device_count())
@@ -23,14 +28,36 @@ BATCH_SIZE = 256 if AVAIL_GPUS else 64
 
 class ManifoldEmbedder(pl.LightningModule):
     """docstring for ManifoldEmbedder"""
-    def __init__(self, num_particles, embed_dim, learning_rate):
+    def __init__(self, data_type, backbone_type, learning_rate, *args):
         super(ManifoldEmbedder, self).__init__()
         self.learning_rate = learning_rate
-        self.num_particles = num_particles
+        #self.num_particles = num_particles
         # particleTransformer takes inputs in the following order
         #(particle_feature_size, d_model, nhead, num_encoder_layers, num_decoder_layers, embed_dim, max_seq_length, pos_dropout, trans_dropout)
-        self.encoder = particleTransformer(3, 8, 2, 2, 2, embed_dim, 8, .4, .4)
+        if data_type == 'jets':
+            if backbone_type == 'MLP':
+                self.encoder = MLP(*args)
+            elif backbone_type == 'Transformer':
+                self.encoder = particleTransformer(3, *args)
+            elif backbone_type == 'LSTM':
+                self.encoder = RNN('LSTM',*args)
+            elif backbone_type == 'GRU':
+                self.encoder = RNN('GRU',*args)
+            else:
+                raise LookupError('only support MLP, Transformer, LSTM and GRU for jets')
 
+        elif data_type == 'MNIST':
+            if backbone_type == 'MLP':
+                self.encoder = MLP(*args)
+
+            elif backbone_type == 'CNN':
+                self.encoder = CNN(*args)
+
+            else:
+                raise LookupError('only support MLP and CNN for MNIST')
+
+        else:
+            raise LookupError('only support Jets and MNIST dataembedding')
         #calculator for emd
         #self.emdcalc = EMDLoss(num_particles=num_particles,device='cuda')
 
@@ -45,21 +72,29 @@ class ManifoldEmbedder(pl.LightningModule):
         # training_step defined the train loop.
         # It is independent of forward
         x, y, dist = batch
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
         #x = x.view(x.size(0), -1)
         x_embed = self.encoder(x)
         y_embed = self.encoder(y)
+        #print("xembed: ",x_embed[:2])
+        #print("yembed: ",x_embed[:2])
         pdist = nn.PairwiseDistance(p=2)
         euclidean_dist = pdist(x_embed,y_embed)
+        #print("euclidean: ", euclidean_dist[:2])
+        #print("emd: ", dist[:2])
         #print(euclidean_dist.size())
         #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-
-        loss = F.mse_loss(euclidean_dist, dist.float())
+        loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
+        #loss = F.mse_loss(euclidean_dist, dist.float())
         # Logging to TensorBoard by default
         self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y, dist = batch
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
         #x = x.view(x.size(0), -1)
         #print(x.size(), y.size(), dist.size())
         x_embed = self.encoder(x)
@@ -67,14 +102,16 @@ class ManifoldEmbedder(pl.LightningModule):
         pdist = nn.PairwiseDistance(p=2)
         euclidean_dist = pdist(x_embed,y_embed)
         #emd = self.emdcalc(x, y)
-
-        loss = F.mse_loss(euclidean_dist, dist.float())
+        loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
+        #loss = F.mse_loss(euclidean_dist, dist.float())
         # Logging to TensorBoard by default
         self.log("val_loss", loss, prog_bar=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         x, y, dist = batch
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
         #x = x.view(x.size(0), -1)
         #print(x.size(), y.size(), dist.size())
         x_embed = self.encoder(x)
@@ -83,13 +120,15 @@ class ManifoldEmbedder(pl.LightningModule):
         euclidean_dist = pdist(x_embed,y_embed)
         #emd = self.emdcalc(x, y)
 
-        loss = F.mse_loss(euclidean_dist, dist.float())
+        #loss = F.mse_loss(euclidean_dist, dist.float())
+        loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
         # Logging to TensorBoard by default
         self.log("test_loss", loss, prog_bar=True)
         return loss
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
         x, label = batch
+        #y[:,:,0] /= torch.max(y[:,:,0])
         return self(x), label
 
     def configure_optimizers(self):
@@ -103,19 +142,21 @@ class JetDataset(torch.utils.data.Dataset):
         if from_file:
             with open(os.path.join(data_dir,jet1_data), 'rb') as handle:
                 self.jet1_data = pickle.load(handle)
+
             with open(os.path.join(data_dir,jet2_data), 'rb') as handle:
                 self.jet2_data = pickle.load(handle)
 
         else:
-            self.jet1_data = torch.FloatTensor(jet1_data.reshape(-1, num_part, 3))
-            self.jet2_data = torch.FloatTensor(jet2_data.reshape(-1, num_part, 3))
+            self.jet1_data = jet1_data
+            self.jet2_data = jet2_data
+        #print(self.jet1_data[0],self.jet2_data[0])
         emdcalc = EMDLoss(num_particles=8,device='cpu')
         if torch.cuda.is_available():
             emdcalc = EMDLoss(num_particles=8,device='cuda')
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        jet1_data = self.process_data(jet1_data, num_part, 3, False )
-        jet2_data = self.process_data(jet2_data, num_part, 3, False )
-        paired_data = torch.utils.data.TensorDataset(jet1_data, jet2_data)
+        self.jet1_data = self.process_data(self.jet1_data, num_part, 3, True )
+        self.jet2_data = self.process_data(self.jet2_data, num_part, 3, True )
+        paired_data = torch.utils.data.TensorDataset(self.jet1_data, self.jet2_data)
         dataloader = DataLoader(paired_data, batch_size=128, shuffle=False)
         emd = torch.zeros(0)
         for x,y in tqdm(dataloader):
@@ -152,14 +193,33 @@ class JetPredictDataset(torch.utils.data.Dataset):
         return len(self.label_data)
 
     def __getitem__(self, index):
-        return self.jet_data[index], label_data[index]
+        return self.jet_data[index], self.label_data[index]
+
+class MNISTPredictDataset(torch.utils.data.Dataset):
+    """docstring for MNISTPredictDataset"""
+    def __init__(self, from_file, data_dir, MNIST_data, label_data):
+        super(MNISTPredictDataset, self).__init__()
+        if from_file:
+            with open(os.path.join(data_dir,MNIST_data), 'rb') as handle:
+                self.MNIST_data = pickle.load(handle)
+
+        else:
+            self.MNIST_data = torch.FloatTensor(MNIST_data)
+
+        self.label_data = label_data
+
+    def __len__(self):
+        return len(self.label_data)
+
+    def __getitem__(self, index):
+        return self.MNIST_data[index], self.label_data[index]
 
 class JetPairDataModule(LightningDataModule):
-    def __init__(self, data_dir: str, file_dict, batch_size :int = BATCH_SIZE):
+    def __init__(self, file_dict, batch_size :int = BATCH_SIZE):
         super().__init__()
-        self.num_types = len(file_dict)
+        #self.num_types = len(file_dict)
         self.file_dict = file_dict
-        self.data_dir = data_dir
+        #self.data_dir = data_dir
         self.batch_size = batch_size
 
     # When doing distributed training, Datamodules have two optional arguments for
@@ -176,21 +236,21 @@ class JetPairDataModule(LightningDataModule):
         # transforms
         # split dataset
         if stage in (None, "fit"):
-            self.jetpair_train = torch.load(os.path.join(self.data_dir,self.file_dict['train']))
-            self.jetpair_val = torch.load(os.path.join(self.data_dir,self.file_dict['val']))
+            self.jetpair_train = torch.load(os.path.join(self.file_dict['train']))
+            self.jetpair_val = torch.load(os.path.join(self.file_dict['val']))
             #self.jetpair_train, self.jetpair_val = random_split(jetpair_train, [280000, 40000])
         if stage == "test":
-            self.jetpair_test = torch.load(os.path.join(self.data_dir,self.file_dict['test']))
+            self.jetpair_test = torch.load(os.path.join(self.file_dict['test']))
         if stage == "predict":
-            self.jetpair_predict = torch.load(os.path.join(self.data_dir,self.file_dict['predict']))
+            self.jetpair_predict = torch.load(os.path.join(self.file_dict['predict']))
 
     # return the dataloader for each split
     def train_dataloader(self):
-        jetpair_train = DataLoader(self.jetpair_train, batch_size=self.batch_size)
+        jetpair_train = DataLoader(self.jetpair_train, batch_size=self.batch_size,shuffle=True,num_workers=4)
         return jetpair_train
 
     def val_dataloader(self):
-        jetpair_val = DataLoader(self.jetpair_val, batch_size=self.batch_size)
+        jetpair_val = DataLoader(self.jetpair_val, batch_size=self.batch_size,num_workers=4)
         return jetpair_val
 
     def test_dataloader(self):
@@ -201,12 +261,90 @@ class JetPairDataModule(LightningDataModule):
         jetpair_predict = DataLoader(self.jetpair_predict, batch_size=self.batch_size)
         return jetpair_predict
 
-class MNISTDataModule(LightningDataModule):
-    def __init__(self, data_dir: str, file_names, batch_size :int = BATCH_SIZE):
+
+class MNISTDataset(torch.utils.data.Dataset):
+    """It returns pair of jet data X, Y and the target emd(X,Y)"""
+    def __init__(self, ot_method, from_file, data_dir, digit1_data, digit2_data):
+        super(MNISTDataset, self).__init__()
+        if from_file:
+            with open(os.path.join(data_dir,digit1_data), 'rb') as handle:
+                self.digit1_data = pickle.load(handle)
+
+            with open(os.path.join(data_dir,digit2_data), 'rb') as handle:
+                self.digit2_data = pickle.load(handle)
+
+        else:
+            self.digit1_data = torch.FloatTensor(digit1_data)
+            self.digit2_data = torch.FloatTensor(digit2_data)
+
+        if ot_method == 'sinkhorn':
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            loss = SamplesLoss(loss="sinkhorn", p=2, blur=.05)
+            #loss(norm_image.view(28,28).to(device),mean_norm_image.to(device)).data.cpu().numpy()
+            #emdcalc = EMDLoss(num_particles=8,device='cpu')
+            #if torch.cuda.is_available():
+            #    emdcalc = EMDLoss(num_particles=8,device='cuda')
+            #device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            #self.digit1_data = self.process_data(self.digit1_data, num_part, 3, False )
+            #self.digit2_data = self.process_data(self.digit2_data, num_part, 3, False )
+            paired_data = torch.utils.data.TensorDataset(self.digit1_data, self.digit2_data)
+            dataloader = DataLoader(paired_data, batch_size=1, shuffle=False)
+            OT = torch.zeros(len(self.digit1_data))
+            for i,(x,y) in enumerate(dataloader):
+                if (i % 100) == 0:
+                    print(f"iteration {i}")
+                #print(loss(x.view(28,28).to(device),y.view(28,28).to(device)))
+                OT[i] = loss(x.view(28,28).to(device),y.view(28,28).to(device))
+            self.OT = OT.to("cpu").float()
+
+        elif ot_method == 'POT':
+            x,y = np.indices((28,28))
+            xs = np.zeros((28*28, 2))
+            xt = np.zeros((28*28, 2))
+            xs[:,0] = x.reshape(-1)
+            xs[:,1] = y.reshape(-1)
+            xt[:,0] = x.reshape(-1)
+            xt[:,1] = y.reshape(-1)
+            M = ot.dist(xs, xt, metric='euclidean')
+            M /= M.max()
+
+            paired_data = torch.utils.data.TensorDataset(self.digit1_data, self.digit2_data)
+            dataloader = DataLoader(paired_data, batch_size=1, shuffle=False)
+            OT = np.zeros(len(self.digit1_data))
+            for i,(x,y) in enumerate(dataloader):
+                if (i % 100) == 0:
+                    print(f"iteration {i}")
+                #print(loss(x.view(28,28).to(device),y.view(28,28).to(device)))
+                x = x.view(28,28)
+                y = y.view(28,28)
+                x = x.data.numpy().astype(np.float64)
+                y = y.data.numpy().astype(np.float64)
+                x /= np.sum(x)
+                y /= np.sum(y)
+                #print(x)
+                OT[i] = ot.emd2(x.reshape(-1), y.reshape(-1), M)
+                #OT[i] = ot.emd2(x, y, M)
+            self.OT = torch.FloatTensor(OT)
+
+
+    #def process_data(self, data, num_part, num_feat, doNormalize):
+    #    data = data.reshape(-1,num_part, num_feat)
+    #    data = data[:,:,[1,2,0]]
+    #    if doNormalize:
+    #        data[:,:,2]/=np.sum(data[:,:,2],axis=1).reshape(-1,1)
+    #    return torch.FloatTensor(data)
+
+    def __len__(self):
+        return len(self.OT)
+
+    def __getitem__(self, index):
+        return self.digit1_data[index], self.digit2_data[index], self.OT[index]
+
+
+class MNISTPairDataModule(LightningDataModule):
+    def __init__(self, file_dict, batch_size :int = BATCH_SIZE):
         super().__init__()
-        self.num_types = len(file_names)
-        self.file_names = file_names
-        self.data_dir = data_dir
+        self.file_dict = file_dict
         self.batch_size = batch_size
 
     # When doing distributed training, Datamodules have two optional arguments for
@@ -221,25 +359,36 @@ class MNISTDataModule(LightningDataModule):
     # OPTIONAL, called for every GPU/machine (assigning state is OK)
     def setup(self, stage: Optional[str] = None):
         # transforms
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         # split dataset
         if stage in (None, "fit"):
-            mnist_train = MNIST(os.getcwd(), train=True, transform=transform)
-            self.mnist_train, self.mnist_val = random_split(mnist_train, [55000, 5000])
-        if stage == "validate":
-            self.mnist_test = MNIST(os.getcwd(), train=False, transform=transform)
-        if stage == "test":
-            self.mnist_test = MNIST(os.getcwd(), train=False, transform=transform)
-        if stage == "predict":
-            self.mnist_predict = MNIST(os.getcwd(), train=False, transform=transform)
+            train_list = []
+            for file in self.file_dict['train']:
+                train_list.append(torch.load(file))
+            self.mnist_train = torch.utils.data.ConcatDataset(train_list)
 
+            val_list = []
+            for file in self.file_dict['val']:
+                val_list.append(torch.load(file))
+            self.mnist_val = torch.utils.data.ConcatDataset(val_list)
+
+        if stage == "test":
+            test_list = []
+            for file in self.file_dict['test']:
+                test_list.append(torch.load(file))
+            self.mnist_test = torch.utils.data.ConcatDataset(test_list)
+
+        if stage == "predict":
+            predict_list = []
+            for file in self.file_dict['predict']:
+                predict_list.append(torch.load(file))
+            self.mnist_predict = torch.utils.data.ConcatDataset(predict_list)
     # return the dataloader for each split
     def train_dataloader(self):
-        mnist_train = DataLoader(self.mnist_train, batch_size=self.batch_size)
+        mnist_train = DataLoader(self.mnist_train, batch_size=self.batch_size,shuffle=True,num_workers=4)
         return mnist_train
 
     def val_dataloader(self):
-        mnist_val = DataLoader(self.mnist_val, batch_size=self.batch_size)
+        mnist_val = DataLoader(self.mnist_val, batch_size=self.batch_size,num_workers=4)
         return mnist_val
 
     def test_dataloader(self):
@@ -263,6 +412,7 @@ class PrintCallbacks(Callback):
 
     def on_train_end(self, trainer, pl_module):
         print("Training ended")
+
 
 
 
