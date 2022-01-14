@@ -131,3 +131,6 @@ dmypy.json
 # Ignore data files
 *.pkl
 *.pt
+*.ckpt
+*.pickle
+
