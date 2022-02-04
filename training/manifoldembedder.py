@@ -217,7 +217,7 @@ class ManifoldEmbedder(pl.LightningModule):
 
 class JetDataset(torch.utils.data.Dataset):
     """It returns pair of jet data X, Y and the target emd(X,Y)"""
-    def __init__(self, from_file, data_dir, jet1_data, jet2_data, num_part):
+    def __init__(self, from_file, data_dir, isToy, jet1_data, jet2_data, num_part):
         super(JetDataset, self).__init__()
         if from_file:
             with open(os.path.join(data_dir,jet1_data), 'rb') as handle:
@@ -230,25 +230,83 @@ class JetDataset(torch.utils.data.Dataset):
             self.jet1_data = jet1_data
             self.jet2_data = jet2_data
         #print(self.jet1_data[0],self.jet2_data[0])
-        emdcalc = EMDLoss(num_particles=8,device='cpu')
+        emdcalc = EMDLoss(num_particles=num_part,device='cpu')
         if torch.cuda.is_available():
-            emdcalc = EMDLoss(num_particles=8,device='cuda')
+            emdcalc = EMDLoss(num_particles=num_part,device='cuda')
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.jet1_data = self.process_data(self.jet1_data, num_part, 3, True )
-        self.jet2_data = self.process_data(self.jet2_data, num_part, 3, True )
+        if isToy:
+            self.jet1_data = self.process_data(self.jet1_data, num_part, 3, True)
+            self.jet2_data = self.process_data(self.jet2_data, num_part, 3, True)
+        else:
+            self.jet1_data = self.process_jet_data_all(self.jet1_data, num_part)
+            self.jet2_data = self.process_jet_data_all(self.jet2_data, num_part)
         paired_data = torch.utils.data.TensorDataset(self.jet1_data, self.jet2_data)
-        dataloader = DataLoader(paired_data, batch_size=128, shuffle=False)
+        dataloader = DataLoader(paired_data, batch_size=100, shuffle=False)
         emd = torch.zeros(0)
         for x,y in tqdm(dataloader):
+            #print(x.shape, y.shape)
             emd = torch.cat((emd.to(device), emdcalc(x.to(device),y.to(device))))
         self.emd = emd.to("cpu").float()
 
-    def process_data(self, data, num_part, num_feat, doNormalize):
+    def process_data(self, dt, num_part, num_feat, doNormalize):
+        data = np.copy(dt)
         data = data.reshape(-1,num_part, num_feat)
         data = data[:,:,[1,2,0]]
         if doNormalize:
             data[:,:,2]/=np.sum(data[:,:,2],axis=1).reshape(-1,1)
         return torch.FloatTensor(data)
+
+    def process_jet_data_all(self, dt, num_part):
+        def fix_phi(phi):
+            phi %= (2*np.pi)
+            if phi > np.pi:
+                phi -= 2*np.pi
+            return phi
+
+        def rotate_eig(evt, num_part):
+            new = np.copy(evt)
+            cov_mat = np.cov(evt[:3*num_part].reshape(-1,3)[:, 1:3], aweights=evt[:3*num_part].reshape(-1,3)[:, 0] , rowvar=False)
+            eig_vals, eig_vecs = np.linalg.eig(cov_mat)
+            idx = eig_vals.argsort()[::1]   
+            eig_vals = eig_vals[idx]
+            eig_vecs = eig_vecs[:,idx]
+            new[:3*num_part].reshape(-1,3)[:, 1:3] = np.matmul(evt[:3*num_part].reshape(-1,3)[:, 1:3], eig_vecs)
+            return new
+        
+        def flip(evt, num_part):
+            new = np.copy(evt)
+            upper_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,2]>0)
+            lower_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,2]<=0)
+            upper_sum = np.sum(evt[:3*num_part].reshape(-1,3)[upper_quadrant,0])
+            lower_sum = np.sum(evt[:3*num_part].reshape(-1,3)[lower_quadrant,0])
+            if lower_sum > upper_sum:
+                new[:3*num_part].reshape(-1,3)[:,2] *= -1
+            return new
+        
+        def flip_eta(evt, num_part):
+            new = np.copy(evt)
+            right_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,1]>0)
+            left_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,1]<=0)
+            right_sum = np.sum(evt[:3*num_part].reshape(-1,3)[right_quadrant,0])
+            left_sum = np.sum(evt[:3*num_part].reshape(-1,3)[left_quadrant,0])
+            if left_sum > right_sum:
+                new[:3*num_part].reshape(-1,3)[:,1] *= -1
+            return new   
+
+        temp = np.copy(dt)
+        pt = temp[:,3*num_part]
+        eta = temp[:,3*num_part+1]
+        phi = temp[:,3*num_part+2]
+        fix_phi_vec = np.vectorize(fix_phi)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= pt.reshape(-1,1)
+        #temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= np.sum(temp[:,:3*num_part].reshape(-1, 16, 3)[:,:,0] ,axis=1).reshape(-1,1)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,1] -= eta.reshape(-1,1)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] = fix_phi_vec(temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] - phi.reshape(-1,1) )
+        temp2 = np.apply_along_axis(rotate_eig, 1, temp, num_part)
+        temp3 = np.apply_along_axis(flip, 1, temp2, num_part)
+        temp4 = np.apply_along_axis(flip_eta, 1, temp3, num_part)
+        #temp2 = np.copy(temp)
+        return torch.FloatTensor(temp4[:,:3*num_part].reshape(-1, num_part, 3)[:, :, [1, 2, 0]])
 
     def __len__(self):
         return len(self.emd)
@@ -275,9 +333,9 @@ class JetTripletDataset(torch.utils.data.Dataset):
             self.jet2_data = jet2_data
             self.jet3_data = jet3_data
         #print(self.jet1_data[0],self.jet2_data[0])
-        emdcalc = EMDLoss(num_particles=8,device='cpu')
+        emdcalc = EMDLoss(num_particles=num_part,device='cpu')
         if torch.cuda.is_available():
-            emdcalc = EMDLoss(num_particles=8,device='cuda')
+            emdcalc = EMDLoss(num_particles=num_part,device='cuda')
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.jet1_data = self.process_data(self.jet1_data, num_part, 3, True )
         self.jet2_data = self.process_data(self.jet2_data, num_part, 3, True )

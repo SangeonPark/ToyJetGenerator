@@ -77,8 +77,8 @@ class jet_data_generator(object):
         dau2_phi %= (2*np.pi)
         #print(dau1_phi, dau2_phi)
         #print("soft",mother.m)
-        dau1_m = np.random.uniform(0, mother.m/1000)
-        dau2_m = np.random.uniform(0, mother.m/1000)
+        dau1_m = np.random.uniform(0, mother.m/10)
+        dau2_m = np.random.uniform(0, mother.m/10)
 
         dau1 = Momentum4.e_m_eta_phi(mother.m/2, dau1_m, self.theta_to_eta(dau1_theta), dau1_phi)
         dau2 = Momentum4.e_m_eta_phi(mother.m/2, dau2_m, self.theta_to_eta(dau2_theta), dau2_phi)
@@ -100,8 +100,8 @@ class jet_data_generator(object):
         if nthsplit==1:
             randomdraw_phi = 0
         #print("hard", nthsplit," ", mother.m)
-        dau1_m = np.random.uniform(mother.m/16, mother.m/2)
-        dau2_m = np.random.uniform(mother.m/16, mother.m/2)
+        dau1_m = np.random.uniform(mother.m/10, mother.m/2)
+        dau2_m = np.random.uniform(mother.m/10, mother.m/2)
         if nthsplit == 1:
             dau1_m = 80.379
             dau2_m = 4.18
@@ -111,7 +111,7 @@ class jet_data_generator(object):
             dau2_m = 4.18
             
         dau1_theta = mother.theta + randomdraw_theta
-        dau2_theta = mother.theta - randomdraw_theta +np.pi
+        dau2_theta = mother.theta - randomdraw_theta + np.pi
 
         dau1_phi = mother.phi + randomdraw_phi
         dau2_phi = mother.phi + randomdraw_phi + np.pi
