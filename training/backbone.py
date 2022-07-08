@@ -142,7 +142,7 @@ class CNN(nn.Module):
             if normalize:
                 layers.append(nn.BatchNorm1d(num_features=out_feat))
             layers.append(nn.LeakyReLU())
-            layers.append(nn.Dropout(p=0.5, inplace = False))
+            layers.append(nn.Dropout(p=0.4, inplace = False))
             return layers
 
         self.convblock = nn.Sequential(

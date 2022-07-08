@@ -1,0 +1,18 @@
+backbone_type: Transformer
+data_npair: 2
+data_type: jets
+epsilon: 1.0e-09
+init_weights: 1.0e-05
+learning_rate: 7.585775750291837e-08
+modelparams:
+- 32
+- 4
+- 3
+- 2
+- 2
+- 16
+- 0.25
+- 0.25
+- - 500
+  - 500
+  - 40

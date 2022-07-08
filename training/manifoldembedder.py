@@ -28,8 +28,9 @@ BATCH_SIZE = 256 if AVAIL_GPUS else 64
 
 class ManifoldEmbedder(pl.LightningModule):
     """docstring for ManifoldEmbedder"""
-    def __init__(self, data_type, data_npair, backbone_type, learning_rate, *args):
+    def __init__(self, data_type, data_npair, backbone_type, learning_rate, modelparams):
         super(ManifoldEmbedder, self).__init__()
+        self.save_hyperparameters()
         self.learning_rate = learning_rate
         self.data_npair = data_npair
         #self.num_particles = num_particles
@@ -37,22 +38,22 @@ class ManifoldEmbedder(pl.LightningModule):
         #(particle_feature_size, d_model, nhead, num_encoder_layers, num_decoder_layers, embed_dim, max_seq_length, pos_dropout, trans_dropout)
         if data_type == 'jets':
             if backbone_type == 'MLP':
-                self.encoder = MLP(*args)
+                self.encoder = MLP(*modelparams)
             elif backbone_type == 'Transformer':
-                self.encoder = particleTransformer(3, *args)
+                self.encoder = particleTransformer(3, *modelparams)
             elif backbone_type == 'LSTM':
-                self.encoder = RNN('LSTM',*args)
+                self.encoder = RNN('LSTM',*modelparams)
             elif backbone_type == 'GRU':
-                self.encoder = RNN('GRU',*args)
+                self.encoder = RNN('GRU',*modelparams)
             else:
                 raise LookupError('only support MLP, Transformer, LSTM and GRU for jets')
 
         elif data_type == 'MNIST':
             if backbone_type == 'MLP':
-                self.encoder = MLP(*args)
+                self.encoder = MLP(*modelparams)
 
             elif backbone_type == 'CNN':
-                self.encoder = CNN(*args)
+                self.encoder = CNN(*modelparams)
 
             else:
                 raise LookupError('only support MLP and CNN for MNIST')
@@ -61,6 +62,7 @@ class ManifoldEmbedder(pl.LightningModule):
             raise LookupError('only support Jets and MNIST dataembedding')
         #calculator for emd
         #self.emdcalc = EMDLoss(num_particles=num_particles,device='cuda')
+        #self.distortion_measure = []
 
 
     def forward(self, x):
@@ -71,11 +73,29 @@ class ManifoldEmbedder(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         # training_step defined the train loop.
+        # It is independent of forwardset
+        loss = self._common_step(batch, batch_idx, "train")
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        # training_step defined the train loop.
         # It is independent of forward
+        loss = self._common_step(batch, batch_idx, "val")
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            print('start')
+            self.distortion_measure = []
+            self.pairwise_ratio = [] 
+        self._common_step(batch, batch_idx, "test")
+        
+    
+    def _common_step(self, batch, batch_idx, stage: str):
         if self.data_npair == 2:
             x, y, dist = batch
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
+            dist = torch.where(dist > 0, dist, torch.tensor(0.001,dtype=torch.float).to(device))
             #x = x.view(x.size(0), -1)
             x_embed = self.encoder(x)
             y_embed = self.encoder(y)
@@ -87,7 +107,20 @@ class ManifoldEmbedder(pl.LightningModule):
             #print("emd: ", dist[:2])
             #print(euclidean_dist.size())
             #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-            loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
+
+
+            if stage == 'test':
+                #print('here')
+                loss = (euclidean_dist-dist).abs() / dist.double().abs()
+                self.distortion_measure.append(loss)
+                loss = (euclidean_dist).abs() / dist.float().abs()
+                self.pairwise_ratio.append(loss)
+                
+                
+            #print('check pass')
+            else:
+                loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs()))/(len(euclidean_dist))
+
 
         elif self.data_npair == 3:
             x, y, z,  dist1, dist2, dist3 = batch
@@ -116,104 +149,223 @@ class ManifoldEmbedder(pl.LightningModule):
 
         #loss = F.mse_loss(euclidean_dist, dist.float())
         # Logging to TensorBoard by default
-        self.log("train_loss", loss, prog_bar=True)
+        #print("end of return step of common", stage, loss)
+        if stage != 'test':
+            self.log(f"{stage}_loss", loss, prog_bar=True, on_step=True)
         return loss
 
-    def validation_step(self, batch, batch_idx):
-        if self.data_npair == 2:
-            x, y, dist = batch
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
-            #x = x.view(x.size(0), -1)
-            x_embed = self.encoder(x)
-            y_embed = self.encoder(y)
-            #print("xembed: ",x_embed[:2])
-            #print("yembed: ",x_embed[:2])
-            pdist = nn.PairwiseDistance(p=2)
-            euclidean_dist = pdist(x_embed,y_embed)
-            #print("euclidean: ", euclidean_dist[:2])
-            #print("emd: ", dist[:2])
-            #print(euclidean_dist.size())
-            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-            loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
 
-        elif self.data_npair == 3:
-            x, y, z,  dist1, dist2, dist3 = batch
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            dist1 = torch.where(dist1 > 0, dist1, torch.tensor(0.01,dtype=torch.float).to(device))
-            dist2 = torch.where(dist2 > 0, dist2, torch.tensor(0.01,dtype=torch.float).to(device))
-            dist3 = torch.where(dist3 > 0, dist3, torch.tensor(0.01,dtype=torch.float).to(device))
-            #x = x.view(x.size(0), -1)
-            x_embed = self.encoder(x)
-            y_embed = self.encoder(y)
-            z_embed = self.encoder(z)
-            #print("xembed: ",x_embed[:2])
-            #print("yembed: ",x_embed[:2])
-            pdist = nn.PairwiseDistance(p=2)
-            euclidean_dist1 = pdist(x_embed,y_embed)
-            euclidean_dist2 = pdist(y_embed,z_embed)
-            euclidean_dist3 = pdist(z_embed,x_embed)
-            #print("euclidean: ", euclidean_dist[:2])
-            #print("emd: ", dist[:2])
-            #print(euclidean_dist.size())
-            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-            loss = (torch.sum((euclidean_dist1 - dist1.float()).abs() / (dist1.float().abs() + 1e-8)+(euclidean_dist2 - dist2.float()).abs() / (dist2.float().abs() + 1e-8)+(euclidean_dist3 - dist3.float()).abs() / (dist3.float().abs() + 1e-8))/(len(euclidean_dist1))) / 3.0
-
-        # Logging to TensorBoard by default
-        self.log("val_loss", loss, prog_bar=True)
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        if self.data_npair == 2:
-            x, y, dist = batch
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            dist = torch.where(dist > 0, dist, torch.tensor(0.01,dtype=torch.float).to(device))
-            #x = x.view(x.size(0), -1)
-            x_embed = self.encoder(x)
-            y_embed = self.encoder(y)
-            #print("xembed: ",x_embed[:2])
-            #print("yembed: ",x_embed[:2])
-            pdist = nn.PairwiseDistance(p=2)
-            euclidean_dist = pdist(x_embed,y_embed)
-            #print("euclidean: ", euclidean_dist[:2])
-            #print("emd: ", dist[:2])
-            #print(euclidean_dist.size())
-            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-            loss = torch.sum((euclidean_dist - dist.float()).abs() / (dist.float().abs() + 1e-8))/(len(euclidean_dist))
-
-        elif self.data_npair == 3:
-            x, y, z,  dist1, dist2, dist3 = batch
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            dist1 = torch.where(dist1 > 0, dist1, torch.tensor(0.01,dtype=torch.float).to(device))
-            dist2 = torch.where(dist2 > 0, dist2, torch.tensor(0.01,dtype=torch.float).to(device))
-            dist3 = torch.where(dist3 > 0, dist3, torch.tensor(0.01,dtype=torch.float).to(device))
-            #x = x.view(x.size(0), -1)
-            x_embed = self.encoder(x)
-            y_embed = self.encoder(y)
-            z_embed = self.encoder(z)
-            #print("xembed: ",x_embed[:2])
-            #print("yembed: ",x_embed[:2])
-            pdist = nn.PairwiseDistance(p=2)
-            euclidean_dist1 = pdist(x_embed,y_embed)
-            euclidean_dist2 = pdist(y_embed,z_embed)
-            euclidean_dist3 = pdist(z_embed,x_embed)
-            #print("euclidean: ", euclidean_dist[:2])
-            #print("emd: ", dist[:2])
-            #print(euclidean_dist.size())
-            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
-            loss = (torch.sum((euclidean_dist1 - dist1.float()).abs() / (dist1.float().abs() + 1e-8)+(euclidean_dist2 - dist2.float()).abs() / (dist2.float().abs() + 1e-8)+(euclidean_dist3 - dist3.float()).abs() / (dist3.float().abs() + 1e-8))/(len(euclidean_dist1))) / 3.0
-
-        self.log("test_loss", loss, prog_bar=True)
-        return loss
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
         x, label = batch
-        #y[:,:,0] /= torch.max(y[:,:,0])
         return self(x), label
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.encoder.parameters(), lr=self.learning_rate)
         return optimizer
+
+class WassersteinEmbedder(ManifoldEmbedder):
+    
+    def initialize_weights(self, m):
+        if isinstance(m, nn.Linear):
+            print('true')
+            nn.init.uniform_(m.weight.data, -self.init_weights, self.init_weights)
+            #nn.init.constant_(m.bias.data, 0)
+    
+    def __init__(self, data_type, data_npair, backbone_type, learning_rate, num_samples, init_weights, modelparams):
+        
+        super(WassersteinEmbedder, self).__init__(data_type, data_npair, backbone_type, learning_rate, modelparams)
+        
+        self.init_weights = init_weights
+        self.encoder.apply(self.initialize_weights)
+        #for m in self.encoder.modules():
+        #    print(m)
+        self.num_samples = num_samples
+        
+    def _common_step(self, batch, batch_idx, stage: str):
+        if self.data_npair == 2:
+            x, y, dist = batch
+            
+            #print(x.type())
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            dist = torch.where(dist > 0, dist, torch.tensor(1e-8,dtype=torch.float).to(device))
+            #x = x.view(x.size(0), -1)
+
+            x_embed = self.encoder(x)
+            y_embed = self.encoder(y)
+            
+            
+            ab = torch.ones(self.num_samples) / self.num_samples
+            ab = ab.to(device)
+            x_embed = x_embed.view(x.size(0), self.num_samples, -1)
+            y_embed = y_embed.view(x.size(0), self.num_samples, -1) 
+            wasserstein_dist = torch.empty(x.size(0)).to(device)
+            for i in range(x.size(0)):
+                M = ot.dist(x_embed[i], y_embed[i])
+                M = M.to(device)
+                wasserstein_dist[i] = ot.emd2(ab, ab, M)
+                #wasserstein_dist[i] = ot.sinkhorn2(ab, ab, M, torch.tensor(1e-1, dtype=torch.float).to(device), method='sinkhorn_log')
+            
+                
+          
+            
+            #wasserstein_dist = ot.sinkhorn2(ab, ab, M, torch.tensor(1e-1, dtype=torch.float).to(device))
+            #wasserstein_dist = ot.emd2(ab, ab, M)
+            #print(wasserstein_dist)
+            
+
+
+            if stage == 'test':
+                #print('here')
+                loss = (wasserstein_dist).abs() / dist.double().abs()
+                self.distortion_measure.append(loss)
+            #print('check pass')
+            else:
+                loss = torch.sum((wasserstein_dist - dist.double()).abs() / (dist.double().abs()))/(len(wasserstein_dist))
+                #print(loss)
+
+
+        elif self.data_npair == 3:
+            x, y, z,  dist1, dist2, dist3 = batch
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            dist1 = torch.where(dist1 > 0, dist1, torch.tensor(0.01,dtype=torch.double).to(device))
+            dist2 = torch.where(dist2 > 0, dist2, torch.tensor(0.01,dtype=torch.double).to(device))
+            dist3 = torch.where(dist3 > 0, dist3, torch.tensor(0.01,dtype=torch.double).to(device))
+            #x = x.view(x.size(0), -1)
+            x_embed = self.encoder(x)
+            y_embed = self.encoder(y)
+            z_embed = self.encoder(z)
+            #print("xembed: ",x_embed[0])
+            #print("yembed: ",y_embed[0])
+            #print("zembed: ",z_embed[0])
+            #pdist = nn.PairwiseDistance(p=2)
+            hyperbolic_dist1 = self.hypdist(x_embed,y_embed)
+            hyperbolic_dist2 = self.hypdist(y_embed,z_embed)
+            hyperbolic_dist3 = self.hypdist(z_embed,x_embed)
+            #print(euclidean_dist1[:1],euclidean_dist2[:1],euclidean_dist3[:1])
+            #print("euclidean: ", euclidean_dist[:2])
+            #print("emd: ", dist[:2])
+            #print(euclidean_dist.size())
+            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
+            loss = (torch.sum((hyperbolic_dist1 - dist1.double()).abs() / (dist1.double().abs() + 1e-8)+(hyperbolic_dist2 - dist2.float()).abs() / (dist2.double().abs() + 1e-8)+(hyperbolic_dist3 - dist3.double()).abs() / (dist3.double().abs() + 1e-8))/(len(hyperbolic_dist1))) / 3.0
+
+
+        #loss = F.mse_loss(euclidean_dist, dist.float())
+        # Logging to TensorBoard by default
+        #print("end of return step of common", stage, loss)
+        if stage != 'test':
+            self.log(f"{stage}_loss", loss, prog_bar=True, on_step=True)
+        return loss
+    
+    
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
+        x, label = batch
+        return self(x.double()), label
+    
+    
+class HyperbolicEmbedder(ManifoldEmbedder):
+    
+    def initialize_weights(self, m):
+        if isinstance(m, nn.Linear):
+            print('true')
+            nn.init.uniform_(m.weight.data, -self.init_weights, self.init_weights)
+            #nn.init.constant_(m.bias.data, 0)
+    
+    def __init__(self, data_type, data_npair, backbone_type, learning_rate, epsilon, init_weights, modelparams):
+        #torch.set_default_dtype(torch.float64)
+        super(HyperbolicEmbedder, self).__init__(data_type, data_npair, backbone_type, learning_rate, modelparams)
+        #for m in self.encoder.modules():
+        #    print(m)
+        self.double()
+        self.init_weights = init_weights
+        self.epsilon = epsilon
+        self.encoder.apply(self.initialize_weights)
+        
+        
+        
+        #self.encoder.weight.data.uniform_(-init_weights, init_weights)
+
+
+    def hypdist(self, u, v):
+        sqdist = torch.sum((u - v) ** 2, dim=-1)
+        squnorm = torch.sum(u ** 2, dim=-1)
+        sqvnorm = torch.sum(v ** 2, dim=-1)
+        x = 1 + 2 * sqdist / ((1 - squnorm) * (1 - sqvnorm)) + self.epsilon
+        z = torch.sqrt(x ** 2 - 1)
+        
+        #print("x: ",x)
+        #print("z: ",z)
+        #print("x+z: ", x+z)
+        return torch.log(x + z)
+    
+    def _common_step(self, batch, batch_idx, stage: str):
+        if self.data_npair == 2:
+            x, y, dist = batch
+            
+            #print(x.type())
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            dist = dist.type(torch.DoubleTensor).to(device)
+            dist = torch.where(dist > 0, dist, torch.tensor(1e-8,dtype=torch.float64).to(device))
+            #x = x.view(x.size(0), -1)
+            x,y, dist=x.type(torch.DoubleTensor).to(device),y.type(torch.DoubleTensor).to(device), dist.type(torch.DoubleTensor).to(device)
+
+            x_embed = self.encoder(x.double())
+            y_embed = self.encoder(y.double())
+
+            hyperbolic_dist = self.hypdist(x_embed,y_embed)
+
+            
+
+
+            if stage == 'test':
+                #print('here')
+                loss = (hyperbolic_dist-dist).abs() / dist.double().abs()
+                self.distortion_measure.append(loss)
+                loss = (hyperbolic_dist).abs() / dist.float().abs()
+                self.pairwise_ratio.append(loss)
+                
+            #print('check pass')
+            else:
+                #loss = torch.sum((hyperbolic_dist - dist.double()).abs() / (dist.double().abs()))/(len(hyperbolic_dist))
+                loss = torch.sum(torch.square(hyperbolic_dist - dist.double()))
+
+
+        elif self.data_npair == 3:
+            x, y, z,  dist1, dist2, dist3 = batch
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            dist1 = torch.where(dist1 > 0, dist1, torch.tensor(0.01,dtype=torch.double).to(device))
+            dist2 = torch.where(dist2 > 0, dist2, torch.tensor(0.01,dtype=torch.double).to(device))
+            dist3 = torch.where(dist3 > 0, dist3, torch.tensor(0.01,dtype=torch.double).to(device))
+            #x = x.view(x.size(0), -1)
+            x_embed = self.encoder(x)
+            y_embed = self.encoder(y)
+            z_embed = self.encoder(z)
+            #print("xembed: ",x_embed[0])
+            #print("yembed: ",y_embed[0])
+            #print("zembed: ",z_embed[0])
+            #pdist = nn.PairwiseDistance(p=2)
+            hyperbolic_dist1 = self.hypdist(x_embed,y_embed)
+            hyperbolic_dist2 = self.hypdist(y_embed,z_embed)
+            hyperbolic_dist3 = self.hypdist(z_embed,x_embed)
+            #print(euclidean_dist1[:1],euclidean_dist2[:1],euclidean_dist3[:1])
+            #print("euclidean: ", euclidean_dist[:2])
+            #print("emd: ", dist[:2])
+            #print(euclidean_dist.size())
+            #emd = self.emdcalc(x.reshape(-1,self.num_particles,3)[:,:,[1,2,0]], y.reshape(-1,self.num_particles,3)[:,:,[1,2,0]])
+            loss = (torch.sum((hyperbolic_dist1 - dist1.double()).abs() / (dist1.double().abs() + 1e-8)+(hyperbolic_dist2 - dist2.float()).abs() / (dist2.double().abs() + 1e-8)+(hyperbolic_dist3 - dist3.double()).abs() / (dist3.double().abs() + 1e-8))/(len(hyperbolic_dist1))) / 3.0
+
+
+        #loss = F.mse_loss(euclidean_dist, dist.float())
+        # Logging to TensorBoard by default
+        #print("end of return step of common", stage, loss)
+        if stage != 'test':
+            self.log(f"{stage}_loss", loss, prog_bar=True, on_step=True)
+        return loss
+    
+    
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
+        x, label = batch
+        return self(x.double()), label
 
 class JetDataset(torch.utils.data.Dataset):
     """It returns pair of jet data X, Y and the target emd(X,Y)"""
@@ -241,7 +393,7 @@ class JetDataset(torch.utils.data.Dataset):
             self.jet1_data = self.process_jet_data_all(self.jet1_data, num_part)
             self.jet2_data = self.process_jet_data_all(self.jet2_data, num_part)
         paired_data = torch.utils.data.TensorDataset(self.jet1_data, self.jet2_data)
-        dataloader = DataLoader(paired_data, batch_size=100, shuffle=False)
+        dataloader = DataLoader(paired_data, batch_size=5000, shuffle=False)
         emd = torch.zeros(0)
         for x,y in tqdm(dataloader):
             #print(x.shape, y.shape)
@@ -266,13 +418,20 @@ class JetDataset(torch.utils.data.Dataset):
         def rotate_eig(evt, num_part):
             new = np.copy(evt)
             cov_mat = np.cov(evt[:3*num_part].reshape(-1,3)[:, 1:3], aweights=evt[:3*num_part].reshape(-1,3)[:, 0] , rowvar=False)
+            #print(new.shape)
+            if np.isnan(np.sum(cov_mat)):
+                return new
             eig_vals, eig_vecs = np.linalg.eig(cov_mat)
+            #print(eig_vals)
             idx = eig_vals.argsort()[::1]   
             eig_vals = eig_vals[idx]
             eig_vecs = eig_vecs[:,idx]
             new[:3*num_part].reshape(-1,3)[:, 1:3] = np.matmul(evt[:3*num_part].reshape(-1,3)[:, 1:3], eig_vecs)
+            #print(index)
+            #index += 1
+            #print(new.shape)
             return new
-        
+
         def flip(evt, num_part):
             new = np.copy(evt)
             upper_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,2]>0)
@@ -282,7 +441,7 @@ class JetDataset(torch.utils.data.Dataset):
             if lower_sum > upper_sum:
                 new[:3*num_part].reshape(-1,3)[:,2] *= -1
             return new
-        
+
         def flip_eta(evt, num_part):
             new = np.copy(evt)
             right_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,1]>0)
@@ -299,6 +458,7 @@ class JetDataset(torch.utils.data.Dataset):
         phi = temp[:,3*num_part+2]
         fix_phi_vec = np.vectorize(fix_phi)
         temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= pt.reshape(-1,1)
+        #print(temp)
         #temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= np.sum(temp[:,:3*num_part].reshape(-1, 16, 3)[:,:,0] ,axis=1).reshape(-1,1)
         temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,1] -= eta.reshape(-1,1)
         temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] = fix_phi_vec(temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] - phi.reshape(-1,1) )
@@ -307,6 +467,7 @@ class JetDataset(torch.utils.data.Dataset):
         temp4 = np.apply_along_axis(flip_eta, 1, temp3, num_part)
         #temp2 = np.copy(temp)
         return torch.FloatTensor(temp4[:,:3*num_part].reshape(-1, num_part, 3)[:, :, [1, 2, 0]])
+
 
     def __len__(self):
         return len(self.emd)
@@ -381,7 +542,7 @@ class JetTripletDataset(torch.utils.data.Dataset):
 
 class JetPredictDataset(torch.utils.data.Dataset):
     """docstring for JetPredictDataset"""
-    def __init__(self, from_file, data_dir, jet_data, label_data, num_part):
+    def __init__(self, from_file, data_dir, isToy, jet_data, label_data, num_part):
         super(JetPredictDataset, self).__init__()
         if from_file:
             with open(os.path.join(data_dir,jet_data), 'rb') as handle:
@@ -390,7 +551,15 @@ class JetPredictDataset(torch.utils.data.Dataset):
         else:
             self.jet_data = jet_data
 
-        self.jet_data = self.process_data(self.jet_data, num_part, 3, True )
+
+
+
+        if isToy:
+            self.jet_data = self.process_data(self.jet_data, num_part, 3, True)
+        else:
+            self.jet_data = self.process_jet_data_all(self.jet_data, num_part)
+
+        
         self.label_data = torch.FloatTensor(label_data)
         
     def process_data(self, data, num_part, num_feat, doNormalize):
@@ -399,6 +568,66 @@ class JetPredictDataset(torch.utils.data.Dataset):
         if doNormalize:
             data[:,:,2]/=np.sum(data[:,:,2],axis=1).reshape(-1,1)
         return torch.FloatTensor(data)
+
+    def process_jet_data_all(self, dt, num_part):
+        def fix_phi(phi):
+            phi %= (2*np.pi)
+            if phi > np.pi:
+                phi -= 2*np.pi
+            return phi
+
+        def rotate_eig(evt, num_part):
+            new = np.copy(evt)
+            cov_mat = np.cov(evt[:3*num_part].reshape(-1,3)[:, 1:3], aweights=evt[:3*num_part].reshape(-1,3)[:, 0] , rowvar=False)
+            #print(new.shape)
+            if np.isnan(np.sum(cov_mat)):
+                return new
+            eig_vals, eig_vecs = np.linalg.eig(cov_mat)
+            #print(eig_vals)
+            idx = eig_vals.argsort()[::1]   
+            eig_vals = eig_vals[idx]
+            eig_vecs = eig_vecs[:,idx]
+            new[:3*num_part].reshape(-1,3)[:, 1:3] = np.matmul(evt[:3*num_part].reshape(-1,3)[:, 1:3], eig_vecs)
+            #print(index)
+            #index += 1
+            #print(new.shape)
+            return new
+
+        def flip(evt, num_part):
+            new = np.copy(evt)
+            upper_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,2]>0)
+            lower_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,2]<=0)
+            upper_sum = np.sum(evt[:3*num_part].reshape(-1,3)[upper_quadrant,0])
+            lower_sum = np.sum(evt[:3*num_part].reshape(-1,3)[lower_quadrant,0])
+            if lower_sum > upper_sum:
+                new[:3*num_part].reshape(-1,3)[:,2] *= -1
+            return new
+
+        def flip_eta(evt, num_part):
+            new = np.copy(evt)
+            right_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,1]>0)
+            left_quadrant = np.where(evt[:3*num_part].reshape(-1,3)[:,1]<=0)
+            right_sum = np.sum(evt[:3*num_part].reshape(-1,3)[right_quadrant,0])
+            left_sum = np.sum(evt[:3*num_part].reshape(-1,3)[left_quadrant,0])
+            if left_sum > right_sum:
+                new[:3*num_part].reshape(-1,3)[:,1] *= -1
+            return new   
+
+        temp = np.copy(dt)
+        pt = temp[:,3*num_part]
+        eta = temp[:,3*num_part+1]
+        phi = temp[:,3*num_part+2]
+        fix_phi_vec = np.vectorize(fix_phi)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= pt.reshape(-1,1)
+        #print(temp)
+        #temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,0] /= np.sum(temp[:,:3*num_part].reshape(-1, 16, 3)[:,:,0] ,axis=1).reshape(-1,1)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,1] -= eta.reshape(-1,1)
+        temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] = fix_phi_vec(temp[:,:3*num_part].reshape(-1, num_part, 3)[:,:,2] - phi.reshape(-1,1) )
+        temp2 = np.apply_along_axis(rotate_eig, 1, temp, num_part)
+        temp3 = np.apply_along_axis(flip, 1, temp2, num_part)
+        temp4 = np.apply_along_axis(flip_eta, 1, temp3, num_part)
+        #temp2 = np.copy(temp)
+        return torch.FloatTensor(temp4[:,:3*num_part].reshape(-1, num_part, 3)[:, :, [1, 2, 0]])
 
     def __len__(self):
         return len(self.label_data)

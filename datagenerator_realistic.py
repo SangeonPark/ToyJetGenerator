@@ -27,14 +27,16 @@ class jet_data_generator(object):
     Then use generate_dataset(N) to generate N number of events  
     
     """
-    def __init__(self, massprior, quarkmass, nprong, nparticle, doFixP,       doMultiprocess=False, ncore = 0):
+    def __init__(self, massprior, nprong, nparticle, doFixP,       doMultiprocess=False, ncore = 0):
         super(jet_data_generator, self).__init__()
         self.massprior = massprior
         self.nprong = nprong
-        self.quarkmass = quarkmass
+        #self.quarkmass = quarkmass
         self.nparticle = nparticle
         self.zsoft = []
         self.zhard = []
+        self.z = []
+        self.randtheta = []
         self.doFixP = doFixP
         self.doMultiprocess = doMultiprocess
         self.ncore = ncore
@@ -192,7 +194,9 @@ class jet_data_generator(object):
         dau1.mom = dau1.mom.boost_particle(mother.mom)
         dau2.mom = dau2.mom.boost_particle(mother.mom)
         #print("deta:",np.abs(mother.mom.eta-dau1.mom.eta),mother.randtheta)
+        self.z.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
         self.zsoft.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
+        self.randtheta.append(randomdraw_theta)
         return dau1, dau2
 
     def massapprox(self,z,theta,p):
@@ -296,6 +300,8 @@ class jet_data_generator(object):
         dau1 = particle(mom=dau1_mom,randtheta=randtheta1,z=dau1_z)
         dau2 = particle(mom=dau2_mom,randtheta=randtheta2,z=dau2_z)
         self.zsoft.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
+        self.z.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
+        self.randtheta.append(randomdraw_theta)
         return dau1,dau2
 
     def checkm1m2m(self,m,m1,m2):
@@ -373,7 +379,7 @@ class jet_data_generator(object):
           theta=self.theta_func(z,m,m1,m2,p)
           count+=1
           if count > 1000:
-            print("Sampled more than 1000 times")
+            #print("Sampled more than 1000 times")
             #print("theta",m,p,z,theta,m1,m2,self.checkm1m2m(m,m1,m2),self.checkdau2(mother,m1,theta,z,iPhi))
             return -1,-1,-1,-1
         return z,theta,m1,m2
@@ -390,15 +396,22 @@ class jet_data_generator(object):
             mother.z=zrand
             mother.randtheta=randomdraw_theta
             if zrand == -1:
-               dau1 = particle(mom=mother.mom,randtheta=-1000,z=-1,m1=-1000,m2=-1000)
-               dau2 = particle(mom=mother.mom,randtheta=-1000,z=-1,m1=-1000,m2=-1000)
-               return dau1,dau2
+                dau1 = particle(mom=mother.mom,randtheta=-1000,z=-1,m1=-1000,m2=-1000)
+                dau2 = particle(mom=mother.mom,randtheta=-1000,z=-1,m1=-1000,m2=-1000)
+                
+                #print("randomtheta: ", randomdraw_theta[0])
+                #print(dau1.mom.p_t[0], dau2.mom.p_t[0])
+                return dau1,dau2, -111.11, -111.11
         dau1_mom,dau2_mom=self.dau2(mother,rand_m1,randomdraw_theta,zrand,randomdraw_phi)
         dau1 = particle(mom=dau1_mom,randtheta=-1000,z=-1000,m1=-1000,m2=-1000)
         dau2 = particle(mom=dau2_mom,randtheta=-1000,z=-1000,m1=-1000,m2=-1000)
         #print("dau1 m",dau1.mom,"dau2 m",dau2.mom)
+        self.z.append(np.min([dau1.mom.p_t[0], dau2.mom.p_t[0]])/(dau1.mom.p_t[0]+dau2.mom.p_t[0]))
         self.zsoft.append(np.min([dau1.mom.p_t[0], dau2.mom.p_t[0]])/(dau1.mom.p_t[0]+dau2.mom.p_t[0]))
-        return dau1,dau2
+        self.randtheta.append(randomdraw_theta[0])
+        #print(dau1, dau2, np.min([dau1.mom.p_t[0], dau2.mom.p_t[0]])/(dau1.mom.p_t[0]+dau2.mom.p_t[0]), randomdraw_theta)
+        #print("randomtheta: ", randomdraw_theta[0])
+        return dau1, dau2, np.min([dau1.mom.p_t[0], dau2.mom.p_t[0]])/(dau1.mom.p_t[0]+dau2.mom.p_t[0]), randomdraw_theta[0]
 
     
     def hardsplit(self, mother, nthsplit):
@@ -413,10 +426,17 @@ class jet_data_generator(object):
         #print("hard", nthsplit," ", mother.m)
         dau1_m = np.random.uniform(mother.mom.m/16, mother.mom.m/2)
         dau2_m = np.random.uniform(mother.mom.m/16, mother.mom.m/2)
-        if nthsplit == 1 and self.nprong > 2:
+        #if nthsplit == 1 and self.nprong > 2:
+        #    dau1_m = 80.379
+        #    dau2_m = 40.18
+        #else:  
+        #    dau1_m = 40.18
+        #    dau2_m = 40.18
+        if nthsplit == 1:
             dau1_m = 80.379
             dau2_m = 40.18
-        else:  
+            
+        if nthsplit == 2:
             dau1_m = 40.18
             dau2_m = 40.18
             
@@ -440,8 +460,10 @@ class jet_data_generator(object):
         dau2 = particle(mom=dau2_mom,randtheta=-1000,z=-1000,m1=-1000,m2=-1000)
         dau1.mom = dau1.mom.boost_particle(mother.mom)
         dau2.mom = dau2.mom.boost_particle(mother.mom)
+        self.randtheta.append(randomdraw_theta)
         self.zhard.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
-        return dau1, dau2
+        self.z.append(np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t))
+        return dau1, dau2, np.min([dau1.mom.p_t, dau2.mom.p_t])/(dau1.mom.p_t+dau2.mom.p_t), randomdraw_theta
 
 
     def draw_first_particle(self):
@@ -449,6 +471,9 @@ class jet_data_generator(object):
         np.random.seed()
         if self.massprior == "signal":
             m = np.random.normal(172.76, 1.32)
+            if self.nprong == 4:
+                m = np.random.normal(500, 1.32)
+                
 
         if self.massprior == "background":
             m = np.random.uniform(0, 100)
@@ -464,64 +489,88 @@ class jet_data_generator(object):
     def hard_decays(self):
         hardparticle_list = [self.draw_first_particle()]
         prong = 1
+        zlist = []
+        thetalist = []
         while prong < self.nprong:
-            dau1, dau2 = self.hardsplit(hardparticle_list[0],prong)
+            dau1, dau2, z, theta = self.hardsplit(hardparticle_list[0],prong)
+            
+            #print(dau1.mom.m, dau2.mom.m)
             hardparticle_list.pop(0)
             self.reverse_insort(hardparticle_list, dau1)
             self.reverse_insort(hardparticle_list, dau2)
+            zlist.append(z)
+            thetalist.append(theta)
             prong += 1
             
-        return hardparticle_list
+        return hardparticle_list, zlist, thetalist
 
     def genshower(self,_):
-        showered_list = self.hard_decays()
+        showered_list, zlist, thetalist = self.hard_decays()
         total_particle = len(showered_list)        
         while total_particle < self.nparticle:
             if showered_list[0].mom.p < 1:
                 break
-            dau1, dau2 = self.softsplit(showered_list[0])
+            #print(self.softsplit(showered_list[0]))
+            dau1, dau2, z, theta = self.softsplit(showered_list[0])
             if dau1.z == -1:
                 break
             #print(dau1.mom,showered_list)
             showered_list.pop(0)
             self.reverse_insort(showered_list, dau1)
             self.reverse_insort(showered_list, dau2)
+            
+            zlist.append(z)
+            thetalist.append(theta)
+            
             total_particle +=1
-        return total_particle,showered_list
+        return total_particle, showered_list, zlist, thetalist
     
     def shower(self,_):
         i=0
-        total_particle,showered_list=self.genshower(i)
+
+        total_particle,showered_list,zlist, thetalist=self.genshower(i)
+        #print(total_particle, self.nparticle)
         while total_particle <  self.nparticle:
-            total_particle,showered_list=self.genshower(i)
+            total_particle,showered_list,zlist, thetalist=self.genshower(i)
         arr = []
+
         check = Momentum4(0,0,0,0)
         for j in range(self.nparticle):
+            #print("WITH NO INDEX",showered_list[j].mom.p_t, showered_list[j].mom.eta, showered_list[j].mom.phi )
+            #print("WITH 0 INDEX",showered_list[j].mom.p_t[0], showered_list[j].mom.eta[0], showered_list[j].mom.phi[0] )
             arr.append(showered_list[j].mom.p_t)
             arr.append(showered_list[j].mom.eta)
             arr.append(showered_list[j].mom.phi)
             check += showered_list[j].mom
 
-        return arr
+
+        #print("squeeze",np.squeeze(np.array(arr)).shape, np.squeeze(np.array(zlist)).shape, np.squeeze(np.array(thetalist)).shape)
+        return np.squeeze(np.array(arr)), np.squeeze(np.array(zlist)), np.squeeze(np.array(thetalist))
 
     def generate_dataset(self, nevent):
 
         #output = torch.FloatTensor([])
 
         data = np.empty([nevent, 3*self.nparticle], dtype=float)
+        data_z     = np.empty([nevent, self.nparticle-1], dtype=float)
+        data_theta = np.empty([nevent, self.nparticle-1], dtype=float)
+        
         if self.doMultiprocess:
             pool = Pool(processes=self.ncore)
-            data = np.array(pool.map(self.shower,range(nevent)))
+            data, data_z, data_theta  = zip(*pool.map(self.shower,range(nevent)))
 
         else:
             for i in range(nevent):
                 if i % 10 == 0:
                     print("event :",i)
-                data[i]  = self.shower(i)
+                arr, arr_z, arr_theta = self.shower(i)    
+                data[i]  = np.squeeze(arr)
+                data_z[i] = np.squeeze(arr_z)
+                data_theta[i] = np.squeeze(arr_theta)
         
 
         #return output
-        return data
+        return np.array(data), np.array(data_z), np.array(data_theta)
 
 
     #def visualize_one_event(self):

@@ -1,0 +1,11 @@
+dec_layers:
+- 100
+- 500
+- 500
+enc_layers:
+- 500
+- 500
+- 100
+hidden_dim: 64
+latent_dim: 3
+lr: 0.001

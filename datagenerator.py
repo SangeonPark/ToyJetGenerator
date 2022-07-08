@@ -24,6 +24,8 @@ class jet_data_generator(object):
         self.nparticle = nparticle
         self.zsoft = []
         self.zhard = []
+        self.thetasoft = []
+        self.thetahard = []
         self.doFixP = doFixP
         self.doMultiprocess = doMultiprocess
         self.ncore = ncore
@@ -87,6 +89,7 @@ class jet_data_generator(object):
         dau2 = dau2.boost_particle(mother)
 
         self.zsoft.append(np.min([dau1.p_t, dau2.p_t])/(dau1.p_t+dau2.p_t))
+        self.thetasoft.append(randomdraw_theta)
         return dau1, dau2
 
 
@@ -125,7 +128,7 @@ class jet_data_generator(object):
         dau2 = dau2.boost_particle(mother)
 
         self.zhard.append(np.min([dau1.p_t, dau2.p_t])/(dau1.p_t+dau2.p_t))
-
+        self.thetahard.append(randomdraw_theta)
         return dau1, dau2
 
 
