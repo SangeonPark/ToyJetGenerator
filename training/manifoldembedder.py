@@ -87,7 +87,8 @@ class ManifoldEmbedder(pl.LightningModule):
         if batch_idx == 0:
             print('start')
             self.distortion_measure = []
-            self.pairwise_ratio = [] 
+            self.pairwise_ratio = []
+            self.original_metric = []
         self._common_step(batch, batch_idx, "test")
         
     
@@ -115,6 +116,7 @@ class ManifoldEmbedder(pl.LightningModule):
                 self.distortion_measure.append(loss)
                 loss = (euclidean_dist).abs() / dist.float().abs()
                 self.pairwise_ratio.append(loss)
+                self.original_metric.append(dist.float().abs())
                 
                 
             #print('check pass')
@@ -323,6 +325,7 @@ class HyperbolicEmbedder(ManifoldEmbedder):
                 self.distortion_measure.append(loss)
                 loss = (hyperbolic_dist).abs() / dist.float().abs()
                 self.pairwise_ratio.append(loss)
+                self.original_metric.append(dist.float().abs())
                 
             #print('check pass')
             else:
